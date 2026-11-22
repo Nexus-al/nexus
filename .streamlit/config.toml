@@ -1,0 +1,11 @@
+[theme]
+base = "dark"
+primaryColor = "#4CAF50"          # мягкий зелёный акцент (как в Material)
+backgroundColor = "#0F172A"        # почти чёрный, спокойный
+secondaryBackgroundColor = "#1E293B"  # чуть светлее для карточек
+textColor = "#F8FAFC"            # белый/очень светлый текст
+font = "sans serif"
+
+[browser]
+disable_gathering = true
+
