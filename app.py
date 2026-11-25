@@ -166,8 +166,15 @@ with tab_w:
         st.rerun()
 
     for day, exercises in plan.items():
-        with st.expander(f"📅 {day}", expanded=(day == list(plan)[0])):
+        with st.expander(day, expanded=(day == list(plan)[0])):
+            col_ic, col_day = st.columns([1, 20])
+            with col_ic:
+                st.image("days_photo.png.png", width=24)
+            with col_day:
+                st.markdown(f"**{day}**")
+
             total = len(exercises)
+
             for ex in exercises:
                 name = ex["name"]
                 sets_txt = f"{ex['sets']} подхода × {ex['reps']} повторений, отдых {ex['rest']}"
