@@ -117,14 +117,18 @@ if st.session_state.get("completed_for") != SAFE_EMAIL:
 
 
 # ---------- CSS: плавно выдвижная панель на 75% экрана ----------
-# Важно: весь CSS одной строкой на правило, без пустых строк внутри <style>,
-# иначе Markdown-парсер Streamlit разрывает HTML-блок и стили вываливаются на экран текстом.
+# Состояние панели задаёт Python: transform меняется при перерисовке страницы,
+# и CSS-переход проигрывается, потому что элемент панели существует всегда.
+# Затемнением управляет JavaScript — по невидимому маркеру data-open,
+# в котором Python сообщает актуальное состояние панели.
 def _inject_css(menu_open: bool) -> None:
+    transform = "translateX(0)" if menu_open else "translateX(-100%)"
     css = (
         "<style>"
         'section[data-testid="stSidebar"]{width:75vw !important;min-width:75vw !important;'
         'max-width:75vw !important;position:fixed !important;top:0 !important;left:0 !important;'
         'height:100vh !important;z-index:100000 !important;'
+        f'transform:{transform} !important;'
         'transition:transform 0.35s cubic-bezier(0.4,0,0.2,1) !important;'
         'box-shadow:8px 0 40px rgba(0,0,0,0.25);}'
         'section[data-testid="stSidebar"] + div{margin-left:0 !important;}'
@@ -133,17 +137,12 @@ def _inject_css(menu_open: bool) -> None:
         '[data-testid="stSidebarCollapseButton"],[data-testid="stSidebarCollapsedControl"]'
         '{display:none !important;}'
         '.nexus-overlay{position:fixed;top:0;left:0;width:100vw;height:100vh;'
-        'background:rgba(0,0,0,0.4);z-index:99999;animation:nexus_fade 0.35s ease;'
-        'pointer-events:auto;cursor:pointer;}'
-        '@keyframes nexus_fade{from{opacity:0;}to{opacity:1;}}'
+        'background:rgba(0,0,0,0.4);z-index:99999;opacity:0;'
+        'transition:opacity 0.35s ease;pointer-events:auto;cursor:pointer;}'
+        "</style>"
+        # Невидимый маркер: JavaScript по нему понимает, открыта панель или закрыта
+        f'<div id="nexus-panel-state" data-open="{1 if menu_open else 0}" style="display:none"></div>'
     )
-    if menu_open:
-        css += 'section[data-testid="stSidebar"]{transform:translateX(0) !important;}'
-    else:
-        css += 'section[data-testid="stSidebar"]{transform:translateX(-100%) !important;}'
-    css += "</style>"
-    if menu_open:
-        css += '<div class="nexus-overlay"></div>'
     st.markdown(css, unsafe_allow_html=True)
 
 
@@ -184,8 +183,49 @@ _MENU_SCRIPT = """
         return null;
     }
 
+    function ensureOverlay() {
+        var ov = doc.querySelector('.nexus-overlay');
+        if (!ov) {
+            ov = doc.createElement('div');
+            ov.className = 'nexus-overlay';
+            ov.style.opacity = '0';
+            doc.body.appendChild(ov);
+            requestAnimationFrame(function() { ov.style.opacity = '1'; });
+        } else if (ov._closing) {
+            // Пользователь успел снова открыть панель до конца анимации закрытия
+            ov._closing = false;
+            if (ov._t) { clearTimeout(ov._t); ov._t = null; }
+            ov.style.opacity = '1';
+        }
+        return ov;
+    }
+
+    function closeOverlay() {
+        var ov = doc.querySelector('.nexus-overlay');
+        if (ov && !ov._closing) {
+            ov._closing = true;
+            ov.style.opacity = '0';
+            ov._t = setTimeout(function() {
+                if (ov.parentNode) ov.parentNode.removeChild(ov);
+            }, 400);
+        }
+    }
+
+    function isOpen() {
+        var marker = doc.getElementById('nexus-panel-state');
+        return !!(marker && marker.getAttribute('data-open') === '1');
+    }
+
     function sync() {
         ensureBurger();
+        // Затемнением управляем строго по маркеру: панель открыта — overlay есть,
+        // закрыта — overlay плавно гаснет. Раньше смотрели на инлайновый
+        // style.transform, которого не существует — отсюда вечное затемнение.
+        if (isOpen()) {
+            ensureOverlay();
+        } else {
+            closeOverlay();
+        }
         var btn = findMenuButton();
         if (!btn) return;
         var col = btn.closest('div[data-testid="stColumn"]');
@@ -199,15 +239,16 @@ _MENU_SCRIPT = """
     doc.addEventListener('click', function(e) {
         var t = e.target;
         var hitBurger = t && (t.id === 'nexus-burger' || (t.closest && t.closest('#nexus-burger')));
-        var hitOverlay = t && ((t.classList && t.classList.contains('nexus-overlay')) ||
-                               (t.closest && t.closest('.nexus-overlay')));
+        var hitOverlay = isOpen() && t &&
+            ((t.classList && t.classList.contains('nexus-overlay')) ||
+             (t.closest && t.closest('.nexus-overlay')));
         if (hitBurger || hitOverlay) {
             var btn = findMenuButton();
             if (btn) btn.click();
         }
     }, true);
 
-    // Следим за перерисовками: снова прячем оригинальную кнопку, если Streamlit её вернул.
+    // Следим за перерисовками: обновляем затемнение и прячем оригинальную кнопку.
     var obs = new MutationObserver(sync);
     obs.observe(doc.body, {childList: true, subtree: true});
     sync();
@@ -240,17 +281,19 @@ NAV = [
     ("profile",  "👤 Профиль"),
 ]
 
-if st.session_state["menu_open"]:
-    with st.sidebar:
-        st.markdown("### Nexus Fitness")
-        st.caption(f"{user['name']} · {user['email']}")
-        logout_button()
-        st.divider()
-        for key, label in NAV:
-            if st.button(label, key=f"nav_{key}", use_container_width=True):
-                st.session_state["page"] = key
-                st.session_state["menu_open"] = False
-                st.rerun()
+# Содержимое панели рисуем ВСЕГДА: при закрытой панели она уехана за левый край
+# экрана (translateX(-100%)) и не видна, зато элемент панели не пересоздаётся
+# при закрытии — анимация работает плавно на всех вкладках.
+with st.sidebar:
+    st.markdown("### Nexus Fitness")
+    st.caption(f"{user['name']} · {user['email']}")
+    logout_button()
+    st.divider()
+    for key, label in NAV:
+        if st.button(label, key=f"nav_{key}", use_container_width=True):
+            st.session_state["page"] = key
+            st.session_state["menu_open"] = False
+            st.rerun()
 
 page = st.session_state["page"]
 
