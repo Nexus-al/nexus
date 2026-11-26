@@ -1,10 +1,9 @@
 """ИИ-тренер Nexus: интерфейс чата (Streamlit). Логика — в nexus/ai.py."""
 
-import os
+import re
 
 import streamlit as st
 
-import nexus_library
 from nexus import ai, db
 
 CHAT_STYLE = """
@@ -84,8 +83,6 @@ CHAT_STYLE = """
 </style>
 """
 
-MAX_CARDS = 3  # максимум карточек упражнений под одним ответом
-
 
 def _safe_email():
     """Почта текущего пользователя в безопасном для хранения виде."""
@@ -93,7 +90,6 @@ def _safe_email():
         from nexus_auth import current_user
         user = current_user()
         if user and user.get("email"):
-            import re
             return re.sub(r"[^a-z0-9_.@-]", "_", user["email"].lower())
     except Exception:
         pass
@@ -116,66 +112,6 @@ def _ensure_state():
     if "current_chat_id" not in st.session_state or \
        st.session_state["current_chat_id"] not in [c["id"] for c in st.session_state["chats"]]:
         st.session_state["current_chat_id"] = st.session_state["chats"][0]["id"]
-
-
-# ---------- Карточки упражнений из локального датасета ----------
-
-@st.cache_data(show_spinner=False)
-def _name_index():
-    """[(строка-триггер, упражнение)] — по всей базе, отсортировано от длинных к коротким."""
-    pairs = []
-    for ex in nexus_library.load_exercises():
-        name = str(ex.get("name", "")).lower().strip()
-        if not name:
-            continue
-        pairs.append((name, ex))
-        ru = nexus_library.get_display_name(name)
-        # длинные русские названия — триггеры; короткие слова дают ложные срабатывания
-        if len(ru) >= 8:
-            pairs.append((ru.lower(), ex))
-    pairs.sort(key=lambda t: -len(t[0]))
-    return pairs
-
-
-def _find_exercises_in_text(text: str) -> list:
-    """Находит в тексте упомянутые упражнения из базы. Максимум MAX_CARDS."""
-    haystack = " " + str(text).lower().replace("ё", "е") + " "
-    found, seen = [], set()
-    try:
-        pairs = _name_index()
-    except Exception:
-        return []
-    for trigger, ex in pairs:
-        if ex["name"] in seen:
-            continue
-        if trigger in haystack:
-            seen.add(ex["name"])
-            found.append(ex)
-            if len(found) >= MAX_CARDS:
-                break
-    return found
-
-
-def _show_cards(text: str):
-    """Рисует под ответом карточки с гифками упомянутых упражнений."""
-    matches = _find_exercises_in_text(text)
-    for ex in matches:
-        title = nexus_library.get_display_name(ex.get("name", "?"))
-        with st.expander(f"🎬 {title} — техника на видео", expanded=False):
-            st.caption(
-                f"{nexus_library.get_target_ru(ex.get('target', ''))} · "
-                f"{nexus_library.get_equipment_ru(ex.get('equipment', ''))}"
-            )
-            gif_path = os.path.join(
-                nexus_library._DATASET_DIR, str(ex.get("gif_url", ""))
-            )
-            if gif_path and os.path.exists(gif_path):
-                st.image(gif_path)
-            steps = nexus_library._get_ru_steps(ex)
-            if steps:
-                st.markdown("**Эталонная техника из базы:**")
-                for i, step in enumerate(steps, 1):
-                    st.markdown(f"{i}. {step}")
 
 
 def chat_tab(p):
@@ -225,8 +161,6 @@ def chat_tab(p):
     for msg in current["history"]:
         with st.chat_message("user" if msg["role"] == "user" else "assistant"):
             st.markdown(msg["content"])
-            if msg["role"] == "assistant":
-                _show_cards(msg["content"])
 
     question = st.chat_input("Спросите: «как делать становую тягу?» или «составлю план на 4 дня?»")
     if not question:
@@ -262,4 +196,3 @@ def chat_tab(p):
 
     current["history"].append({"role": "assistant", "content": response})
     db.save_chat(email, current)
-    _show_cards(response)

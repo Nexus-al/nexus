@@ -9,6 +9,7 @@ from datetime import datetime
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from nexus_core import (MALE, FEMALE, GOALS, LEVELS, EQUIPMENT,
                         Profile, bmi, bmi_category, calories, macros,
@@ -23,6 +24,11 @@ PROGRESS_FILE = "progress.json"
 
 st.set_page_config(page_title="Nexus Fitness", page_icon="nexus_logo.png", layout="wide")
 
+# ---------- Состояние интерфейса ----------
+if "page" not in st.session_state:
+    st.session_state["page"] = "ai"          # стартовый экран — ИИ-тренер
+if "menu_open" not in st.session_state:
+    st.session_state["menu_open"] = False    # панель по умолчанию закрыта
 
 # ---------- Авторизация ----------
 user = current_user()
@@ -110,48 +116,172 @@ if st.session_state.get("completed_for") != SAFE_EMAIL:
     st.session_state["completed_for"] = SAFE_EMAIL
 
 
-if os.path.exists("nexus_logo.png"):
-    col1, col2 = st.columns([1, 8])
-    with col1:
-        st.image("nexus_logo.png", width=120)
-    with col2:
+# ---------- CSS: плавно выдвижная панель на 75% экрана ----------
+# Важно: весь CSS одной строкой на правило, без пустых строк внутри <style>,
+# иначе Markdown-парсер Streamlit разрывает HTML-блок и стили вываливаются на экран текстом.
+def _inject_css(menu_open: bool) -> None:
+    css = (
+        "<style>"
+        'section[data-testid="stSidebar"]{width:75vw !important;min-width:75vw !important;'
+        'max-width:75vw !important;position:fixed !important;top:0 !important;left:0 !important;'
+        'height:100vh !important;z-index:100000 !important;'
+        'transition:transform 0.35s cubic-bezier(0.4,0,0.2,1) !important;'
+        'box-shadow:8px 0 40px rgba(0,0,0,0.25);}'
+        'section[data-testid="stSidebar"] + div{margin-left:0 !important;}'
+        'section[data-testid="stSidebar"] ~ div{margin-left:0 !important;}'
+        'div[data-testid="stMain"]{margin-left:0 !important;}'
+        '[data-testid="stSidebarCollapseButton"],[data-testid="stSidebarCollapsedControl"]'
+        '{display:none !important;}'
+        '.nexus-overlay{position:fixed;top:0;left:0;width:100vw;height:100vh;'
+        'background:rgba(0,0,0,0.4);z-index:99999;animation:nexus_fade 0.35s ease;'
+        'pointer-events:auto;cursor:pointer;}'
+        '@keyframes nexus_fade{from{opacity:0;}to{opacity:1;}}'
+    )
+    if menu_open:
+        css += 'section[data-testid="stSidebar"]{transform:translateX(0) !important;}'
+    else:
+        css += 'section[data-testid="stSidebar"]{transform:translateX(-100%) !important;}'
+    css += "</style>"
+    if menu_open:
+        css += '<div class="nexus-overlay"></div>'
+    st.markdown(css, unsafe_allow_html=True)
+
+
+_MENU_SCRIPT = """
+<script>
+(function() {
+    var doc = window.parent.document;
+    // Скрипт должен выполниться ровно один раз: документ живёт постоянно,
+    // а его обработчики переживают любые перерисовки Streamlit.
+    if (window.__nexusMenuBound) return;
+    window.__nexusMenuBound = true;
+
+    function ensureBurger() {
+        var b = doc.getElementById('nexus-burger');
+        if (b) return b;
+        b = doc.createElement('div');
+        b.id = 'nexus-burger';
+        b.textContent = '☰';
+        b.setAttribute('style', [
+            'position:fixed','top:12px','left:12px','width:44px','height:44px',
+            'border-radius:999px','background:#1f2430',
+            'border:1px solid rgba(255,255,255,0.15)',
+            'box-shadow:0 2px 10px rgba(0,0,0,0.25)',
+            'display:flex','align-items:center','justify-content:center',
+            'font-size:20px','line-height:1','cursor:pointer',
+            'color:#ffffff','user-select:none','pointer-events:auto','z-index:2147483000'
+        ].join(';'));
+        doc.body.appendChild(b);
+        return b;
+    }
+
+    function findMenuButton() {
+        var btns = doc.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) {
+            var t = btns[i].textContent || '';
+            if (t.indexOf('☰') !== -1) return btns[i];
+        }
+        return null;
+    }
+
+    function sync() {
+        ensureBurger();
+        var btn = findMenuButton();
+        if (!btn) return;
+        var col = btn.closest('div[data-testid="stColumn"]');
+        if (col && col.style.visibility !== 'hidden') {
+            col.style.visibility = 'hidden';
+        }
+    }
+
+    // Делегирование: ловим клики на самом документе, поэтому обработчик
+    // работает и с гамбургером, и с заново созданным затемнением после перерисовок.
+    doc.addEventListener('click', function(e) {
+        var t = e.target;
+        var hitBurger = t && (t.id === 'nexus-burger' || (t.closest && t.closest('#nexus-burger')));
+        var hitOverlay = t && ((t.classList && t.classList.contains('nexus-overlay')) ||
+                               (t.closest && t.closest('.nexus-overlay')));
+        if (hitBurger || hitOverlay) {
+            var btn = findMenuButton();
+            if (btn) btn.click();
+        }
+    }, true);
+
+    // Следим за перерисовками: снова прячем оригинальную кнопку, если Streamlit её вернул.
+    var obs = new MutationObserver(sync);
+    obs.observe(doc.body, {childList: true, subtree: true});
+    sync();
+})();
+</script>
+"""
+
+
+def _mount_menu_script() -> None:
+    components.html(_MENU_SCRIPT, height=0)
+
+
+_inject_css(st.session_state["menu_open"])
+_mount_menu_script()
+
+# ---------- Кнопка-гамбургер в левом верхнем углу ----------
+# Оригинал рендерим, но прячем скриптом; видимая кнопка — плавающий гамбургер.
+col_btn, col_rest = st.columns([0.06, 0.94])
+with col_btn:
+    if st.button("☰", key="menu_btn"):
+        st.session_state["menu_open"] = not st.session_state["menu_open"]
+        st.rerun()
+
+# ---------- Навигация ----------
+NAV = [
+    ("ai",       "🤖 ИИ-тренер"),
+    ("workouts", "🏋️ Тренировки"),
+    ("nutrition", "🥗 Питание"),
+    ("progress", "📈 Прогресс"),
+    ("profile",  "👤 Профиль"),
+]
+
+if st.session_state["menu_open"]:
+    with st.sidebar:
         st.markdown("### Nexus Fitness")
-        st.caption("Твой персональный ИИ‑тренер и трекер прогресса")
-else:
-    st.markdown("### 💪 Nexus Fitness")
-    st.caption("Твой персональный ИИ‑тренер и трекер прогресса (логотип не найден)")
+        st.caption(f"{user['name']} · {user['email']}")
+        logout_button()
+        st.divider()
+        for key, label in NAV:
+            if st.button(label, key=f"nav_{key}", use_container_width=True):
+                st.session_state["page"] = key
+                st.session_state["menu_open"] = False
+                st.rerun()
 
-# ---------- Боковая панель: аккаунт и профиль ----------
-with st.sidebar:
-    st.header(f"👤 {user['name']}")
-    st.caption(user["email"])
-    logout_button()
-    st.divider()
+page = st.session_state["page"]
 
-    st.header("Ваш профиль")
-    p.name = st.text_input("Имя", p.name or "Атлет")
-    p.sex = st.radio("Пол", [MALE, FEMALE], index=[MALE, FEMALE].index(p.sex))
-    p.age = st.slider("Возраст", 14, 90, p.age)
-    p.height = st.slider("Рост, см", 130, 220, p.height)
-    p.weight = st.slider("Вес, кг", 35.0, 200.0, p.weight, 0.5)
-    p.goal = st.select_slider("Цель", GOALS, value=p.goal)
-    p.level = st.select_slider("Уровень", LEVELS, value=p.level)
-    p.days_per_week = st.select_slider("Тренировок в неделю", list(range(2, 6)), value=min(p.days_per_week, 5))
-    p.equipment = st.select_slider("Инвентарь", EQUIPMENT, value=p.equipment)
-    if st.button("💾 Сохранить профиль", use_container_width=True):
-        save_profile(p)
-        st.success("Профиль сохранён")
+# ---------- Стартовый экран: ИИ-тренер на весь экран ----------
+if page == "ai":
+    h = datetime.now().hour
+    if h < 5:
+        hello = "Доброй ночи"
+    elif h < 12:
+        hello = "Доброе утро"
+    elif h < 18:
+        hello = "Добрый день"
+    else:
+        hello = "Добрый вечер"
+    first_name = user["name"].split()[0]
 
-kcal = calories(p)
-bmi_v = bmi(p)
+    st.markdown(
+        f"""
+        <div style="text-align:center; margin-top: 8vh;">
+            <h1 style="font-weight: 700; margin-bottom: 0.2em;">{hello}, {first_name}!</h1>
+            <p style="font-size: 1.1rem; opacity: 0.7;">
+                Чем займёмся сегодня — тренировка, питание или пара вопросов?
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    chat_tab(p)
 
-# ---------- Табы ----------
-tab_w, tab_n, tab_p, tab_ai = st.tabs(
-    ["🏋️ Тренировки", "🥗 Питание", "📈 Прогресс", "🤖 ИИ-тренер"]
-)
-
-# ---------- Вкладка «Тренировки» ----------
-with tab_w:
+# ---------- Страница «Тренировки» ----------
+elif page == "workouts":
     st.subheader(f"План недели: {p.goal}, {p.level.lower()}")
     st.caption(f"Целевая нагрузка: {p.days_per_week} тренировки в неделю · инвентарь: {p.equipment.lower()}")
 
@@ -166,13 +296,7 @@ with tab_w:
         st.rerun()
 
     for day, exercises in plan.items():
-        with st.expander(day, expanded=(day == list(plan)[0])):
-            col_ic, col_day = st.columns([1, 20])
-            with col_ic:
-                st.image("days_photo.png.png", width=24)
-            with col_day:
-                st.markdown(f"**{day}**")
-
+        with st.expander(f"📅 {day}", expanded=(day == list(plan)[0])):
             total = len(exercises)
 
             for ex in exercises:
@@ -201,8 +325,9 @@ with tab_w:
                 time.sleep(1)
             st.success("Отдых закончен — вперёд!")
 
-# ---------- Вкладка «Питание» ----------
-with tab_n:
+# ---------- Страница «Питание» ----------
+elif page == "nutrition":
+    kcal = calories(p)
     st.subheader(f"Цель: {kcal} ккал в день")
     m = macros(p, kcal)
     c1, c2, c3, c4 = st.columns(4)
@@ -217,8 +342,9 @@ with tab_n:
     for meal, dish in meal_plan(p).items():
         st.markdown(f"**{meal}:** {dish}")
 
-# ---------- Вкладка «Прогресс» ----------
-with tab_p:
+# ---------- Страница «Прогресс» ----------
+elif page == "progress":
+    bmi_v = bmi(p)
     st.subheader("Динамика веса")
     if p.weight_history:
         df = pd.DataFrame(p.weight_history, columns=["Дата", "Вес"])
@@ -240,6 +366,20 @@ with tab_p:
     st.subheader("ИМТ")
     st.metric("ИМТ", f"{bmi_v:.1f}", bmi_category(bmi_v))
 
-# ---------- Вкладка «ИИ-тренер» ----------
-with tab_ai:
-    chat_tab(p)
+# ---------- Страница «Профиль» ----------
+elif page == "profile":
+    st.subheader("Ваш профиль")
+    p.name = st.text_input("Имя", p.name or "Атлет")
+    p.sex = st.radio("Пол", [MALE, FEMALE], index=[MALE, FEMALE].index(p.sex))
+    p.age = st.slider("Возраст", 14, 90, p.age)
+    p.height = st.slider("Рост, см", 130, 220, p.height)
+    p.weight = st.slider("Вес, кг", 35.0, 200.0, p.weight, 0.5)
+    p.goal = st.select_slider("Цель", GOALS, value=p.goal)
+    p.level = st.select_slider("Уровень", LEVELS, value=p.level)
+    p.days_per_week = st.select_slider("Тренировок в неделю", list(range(2, 6)), value=min(p.days_per_week, 5))
+    p.equipment = st.select_slider("Инвентарь", EQUIPMENT, value=p.equipment)
+    if st.button("💾 Сохранить профиль", use_container_width=True):
+        save_profile(p)
+        st.success("Профиль сохранён")
+    bmi_v = bmi(p)
+    st.metric("ИМТ", f"{bmi_v:.1f}", bmi_category(bmi_v))
