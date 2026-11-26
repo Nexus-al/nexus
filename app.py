@@ -117,10 +117,9 @@ if st.session_state.get("completed_for") != SAFE_EMAIL:
 
 
 # ---------- CSS: плавно выдвижная панель на 75% экрана ----------
-# Состояние панели задаёт Python: transform меняется при перерисовке страницы,
-# и CSS-переход проигрывается, потому что элемент панели существует всегда.
-# Затемнением управляет JavaScript — по невидимому маркеру data-open,
-# в котором Python сообщает актуальное состояние панели.
+# Состояние панели задаёт Python (transform в CSS), затемнение — чисто визуальный
+# слой без pointer-events: он ничего не перехватывает. Закрытие по клику «мимо
+# панели» делает JavaScript: любой клик вне панели при открытой панели её закрывает.
 def _inject_css(menu_open: bool) -> None:
     transform = "translateX(0)" if menu_open else "translateX(-100%)"
     css = (
@@ -138,7 +137,7 @@ def _inject_css(menu_open: bool) -> None:
         '{display:none !important;}'
         '.nexus-overlay{position:fixed;top:0;left:0;width:100vw;height:100vh;'
         'background:rgba(0,0,0,0.4);z-index:99999;opacity:0;'
-        'transition:opacity 0.35s ease;pointer-events:auto;cursor:pointer;}'
+        'transition:opacity 0.35s ease;pointer-events:none;}'
         "</style>"
         # Невидимый маркер: JavaScript по нему понимает, открыта панель или закрыта
         f'<div id="nexus-panel-state" data-open="{1 if menu_open else 0}" style="display:none"></div>'
@@ -183,6 +182,32 @@ _MENU_SCRIPT = """
         return null;
     }
 
+    function toggleMenu() {
+        var btn = findMenuButton();
+        if (btn) { btn.click(); return; }
+        // Кнопка ещё не отрисовалась — пробуем ещё несколько раз
+        var tries = 0;
+        var iv = setInterval(function() {
+            tries++;
+            var b = findMenuButton();
+            if (b) { clearInterval(iv); b.click(); }
+            else if (tries > 25) clearInterval(iv);
+        }, 100);
+    }
+
+    function isOpen() {
+        var marker = doc.getElementById('nexus-panel-state');
+        if (marker) return marker.getAttribute('data-open') === '1';
+        // Резервная проверка: вычисленный transform панели
+        var sb = doc.querySelector('section[data-testid="stSidebar"]');
+        if (!sb) return false;
+        try {
+            return new DOMMatrix(getComputedStyle(sb).transform).m41 === 0;
+        } catch (err) {
+            return false;
+        }
+    }
+
     function ensureOverlay() {
         var ov = doc.querySelector('.nexus-overlay');
         if (!ov) {
@@ -211,16 +236,8 @@ _MENU_SCRIPT = """
         }
     }
 
-    function isOpen() {
-        var marker = doc.getElementById('nexus-panel-state');
-        return !!(marker && marker.getAttribute('data-open') === '1');
-    }
-
     function sync() {
         ensureBurger();
-        // Затемнением управляем строго по маркеру: панель открыта — overlay есть,
-        // закрыта — overlay плавно гаснет. Раньше смотрели на инлайновый
-        // style.transform, которого не существует — отсюда вечное затемнение.
         if (isOpen()) {
             ensureOverlay();
         } else {
@@ -234,18 +251,21 @@ _MENU_SCRIPT = """
         }
     }
 
-    // Делегирование: ловим клики на самом документе, поэтому обработчик
-    // работает и с гамбургером, и с заново созданным затемнением после перерисовок.
+    // Один обработчик на весь документ:
+    // - клик по гамбургеру — переключает панель;
+    // - любой другой клик при открытой панели и вне самой панели — закрывает её.
+    // Затемнение чисто визуальное (pointer-events:none), клики сквозь него
+    // доходят до страницы, и логика закрытия от него не зависит совсем.
     doc.addEventListener('click', function(e) {
         var t = e.target;
-        var hitBurger = t && (t.id === 'nexus-burger' || (t.closest && t.closest('#nexus-burger')));
-        var hitOverlay = isOpen() && t &&
-            ((t.classList && t.classList.contains('nexus-overlay')) ||
-             (t.closest && t.closest('.nexus-overlay')));
-        if (hitBurger || hitOverlay) {
-            var btn = findMenuButton();
-            if (btn) btn.click();
+        if (t && (t.id === 'nexus-burger' || (t.closest && t.closest('#nexus-burger')))) {
+            toggleMenu();
+            return;
         }
+        if (!isOpen()) return;
+        if (!t || !t.closest) return;
+        if (t.closest('section[data-testid="stSidebar"]')) return;
+        toggleMenu();
     }, true);
 
     // Следим за перерисовками: обновляем затемнение и прячем оригинальную кнопку.
