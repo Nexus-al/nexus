@@ -8,6 +8,15 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+# ---------- Переносим ключ GigaChat из secrets в переменную окружения ----------
+# Сам ключ НИКОГДА не хранится в коде: он лежит в .streamlit/secrets.toml локально
+# и в Secrets на Streamlit Cloud. Модуль ai.py читает os.environ["GIGA_AUTH_KEY"].
+if "GIGA_AUTH_KEY" not in os.environ:
+    try:
+        os.environ["GIGA_AUTH_KEY"] = st.secrets["GIGA_AUTH_KEY"]
+    except (FileNotFoundError, KeyError):
+        pass  # без ключа приложение запустится, но чат скажет «ключ не найден»
+
 from nexus import db
 from nexus.core import (MALE, FEMALE, GOALS, LEVELS, EQUIPMENT,
                         Profile, bmi, bmi_category, calories, macros,
@@ -119,7 +128,7 @@ if os.path.exists("nexus_logo.png"):
         st.markdown("### Nexus Fitness")
         st.caption("Твой персональный ИИ‑тренер и трекер прогресса")
 else:
-    st.markdown("### 💪 Nexus Fitness")
+    st.markdown("### Nexus Fitness")
     st.caption("Твой персональный ИИ‑тренер и трекер прогресса (логотип не найден)")
 
 # ---------- Боковая панель: аккаунт и профиль ----------
@@ -148,7 +157,7 @@ bmi_v = bmi(p)
 
 # ---------- Табы ----------
 tab_w, tab_n, tab_p, tab_ai = st.tabs(
-    ["🏋️ Тренировки", "🥗 Питание", "📈 Прогресс", "🤖 ИИ-тренер"]
+    ["Тренировки", "Питание", "Прогресс", "ИИ-тренер"]
 )
 
 # ---------- Вкладка «Тренировки» ----------
@@ -167,7 +176,13 @@ with tab_w:
         st.rerun()
 
     for day, exercises in plan.items():
-        with st.expander(f"📅 {day}", expanded=(day == list(plan)[0])):
+        with st.expander(day, expanded=(day == list(plan)[0])):
+            col_ic, col_day = st.columns([1, 20])
+            with col_ic:
+                st.image("days_photo.png.png", width=24)
+            with col_day:
+                st.markdown(f"**{day}**")
+
             total = len(exercises)
             for ex in exercises:
                 name = ex["name"]
