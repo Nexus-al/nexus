@@ -6,6 +6,7 @@
 
 import json
 import os
+import re
 import time
 import uuid
 
@@ -18,11 +19,16 @@ OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
 CHAT_URL = "https://api.giga.chat/v1/chat/completions"
 MODEL = "GigaChat-2"
 
-SYSTEM_PROMPT = """Ты — ИИ-тренер приложения Nexus Fitness. Отвечай на русском языке,
-кратко, дружелюбно и по делу. Ты знаешь профиль пользователя и даёшь советы
-с его учётом: тренировки, питание, восстановление, мотивация, техника упражнений.
+SYSTEM_PROMPT = """Ты — Nexus, ИИ-тренер приложения Nexus Fitness. Твоё имя — Nexus,
+и никак иначе. Отвечай на русском языке, кратко, дружелюбно и по делу.
+Ты знаешь профиль пользователя и даёшь советы с его учётом: тренировки,
+питание, восстановление, мотивация, техника упражнений.
 
 Правила:
+- Никогда не называй себя GigaChat, Sber Assistant, «моделью Сбера» или любой
+  другой моделью/платформой. Если пользователь спрашивает, кто ты, — отвечай:
+  «Я Nexus, твой персональный тренер». Не упоминай GigaChat даже косвенно
+  («на базе GigaChat», «GigaChat меня обучил» и т. п.).
 - Обращайся к врачу ТОЛЬКО при травме, боли, заболевании или подозрении на них.
   Здоровый пользователь любого возраста (в том числе подросток) НЕ нуждается
   в рекомендациях врача — не советуй врача без причины и не отказывайся
@@ -46,6 +52,16 @@ SYSTEM_PROMPT = """Ты — ИИ-тренер приложения Nexus Fitness
 («жим штанги лёжа», «тяга верхнего блока», «приседания со штангой»)."""
 
 _TOKEN_CACHE = {"token": None, "exp": 0.0}
+
+_GIGA_NAME_RE = re.compile(
+    r"(Sber\s*Assistant|Giga\s*Chat|Гигачат|Гига\s*Чат|Гига\s*Chat|GigaChat)",
+    flags=re.IGNORECASE,
+)
+
+
+def _clean_name(text: str) -> str:
+    """Заменяет чужие имена модели на Nexus (страховка на случай, если модель вырвется)."""
+    return _GIGA_NAME_RE.sub("Nexus", text)
 
 
 def _profile_text(p) -> str:
@@ -118,6 +134,8 @@ def _ask_giga_stream(p, history):
 
     Поток читаем как байты и декодируем в UTF-8 вручную — иначе
     requests декодирует его как latin-1 и русский текст ломается.
+    Каждый кусочек проходит через _clean_name, чтобы в интерфейс
+    и в историю не просочилось имя GigaChat.
     """
     token = _get_token()
     payload = {
@@ -154,4 +172,4 @@ def _ask_giga_stream(p, history):
                 continue
             piece = chunk["choices"][0]["delta"].get("content") or ""
             if piece:
-                yield piece
+                yield _clean_name(piece)
